@@ -6,15 +6,27 @@ import numpy as np
 rng = np.random.default_rng()
 
 
-def simulation(win_rate, avg_win, avg_loss, commission, num_trades):
+def simulation(
+    win_rate,
+    avg_win,
+    avg_loss,
+    commission,
+    num_trades,
+    calc_method="Equity percent",
+    start_capital=10000.0,
+):
     df = pd.DataFrame(
         rng.choice([1, -1], num_trades, True, [win_rate / 100, 1 - win_rate / 100]),
         columns=["outcome"],
     )
-    df["amt"] = np.where(
-        df["outcome"] > 0, avg_win - commission, -avg_loss - commission
-    )
-    df["equity"] = df["amt"].cumsum()
+    if calc_method == "Equity percent":
+        df["amt"] = np.where(df["outcome"] > 0, avg_win / 100, -avg_loss / 100)
+        df["equity"] = (1 + df["amt"]).cumprod() * start_capital
+    else:
+        df["amt"] = np.where(
+            df["outcome"] > 0, avg_win - commission, -avg_loss - commission
+        )
+        df["equity"] = df["amt"].cumsum()
     df.drop(columns=["amt"], inplace=True)
     df["streaks"] = (
         df.groupby((df["outcome"] != df["outcome"].shift()).cumsum()).cumcount() + 1
@@ -26,7 +38,14 @@ def simulation(win_rate, avg_win, avg_loss, commission, num_trades):
 
 
 def simulate_trading(
-    win_rate, avg_win, avg_loss, commission, trades_in_trial, num_trials
+    win_rate,
+    avg_win,
+    avg_loss,
+    commission,
+    trades_in_trial,
+    num_trials,
+    calc_method="Equity percent",
+    start_capital=10000.0,
 ):
     df_min = pd.DataFrame()
     df_max = pd.DataFrame()
@@ -54,6 +73,8 @@ def simulate_trading(
             avg_loss=avg_loss,
             commission=commission,
             num_trades=trades_in_trial,
+            calc_method=calc_method,
+            start_capital=start_capital,
         )
         final_equity = df["equity"].iloc[-1]
         if df_max.empty or final_equity > df_max["equity"].iloc[-1]:
@@ -86,6 +107,11 @@ def simulate_trading(
     low_equity_avg = low_equity_avg / num_trials
     win_streak_avg = win_streak_avg / num_trials
     loss_streak_avg = loss_streak_avg / num_trials
+    if min_final_equity < start_capital:
+        min_final_equity = f":red[{min_final_equity:,.2f}]"
+    else:
+        min_final_equity = f"{min_final_equity:,.2f}"
+
     stats_df = pd.DataFrame(
         {
             "Max": [
@@ -105,7 +131,7 @@ def simulate_trading(
             "Min": [
                 "",
                 f"{low_equity:,.2f}",
-                f"{min_final_equity:,.2f}",
+                min_final_equity,
                 f"{low_win_streak}",
                 f"{low_loss_streak}",
             ],
@@ -133,25 +159,107 @@ def simulate_trading(
 st.set_page_config(page_title="Trading System Monte Carlo Analysis", layout="wide")
 st.title(":material/analytics: Trading System Analysis with Monte Carlo Simulations")
 
+# Initialize session state variables if they do not exist
+# Save state for optional parameters
+if "percent_avg_win" in st.session_state:
+    st.session_state.percent_avg_win = st.session_state.percent_avg_win
+else:
+    st.session_state.percent_avg_win = 3.0
+if "percent_avg_loss" in st.session_state:
+    st.session_state.percent_avg_loss = st.session_state.percent_avg_loss
+else:
+    st.session_state.percent_avg_loss = 1.0
+if "start_capital" in st.session_state:
+    st.session_state.start_capital = st.session_state.start_capital
+else:
+    st.session_state.start_capital = 10000.0
+if "amount_avg_win" in st.session_state:
+    st.session_state.amount_avg_win = st.session_state.amount_avg_win
+else:
+    st.session_state.amount_avg_win = 1000.0
+if "amount_avg_loss" in st.session_state:
+    st.session_state.amount_avg_loss = st.session_state.amount_avg_loss
+else:
+    st.session_state.amount_avg_loss = 500.0
+if "commission" in st.session_state:
+    st.session_state.commission = st.session_state.commission
+else:
+    st.session_state.commission = 0.0
+
+if "results" not in st.session_state:
+    st.session_state.results = {}
+    st.session_state.stats = pd.DataFrame()
+
+
 c1, c2 = st.columns([2, 8], vertical_alignment="top", gap="medium")
+
 with c1:
     st.subheader(":blue[:material/function: Parameters]", divider=True)
 
-    win_rate = st.slider(
-        "Win rate (%):", min_value=0.0, max_value=100.0, value=50.0, step=0.05
+    st.number_input(
+        "Win rate (%):",
+        min_value=0.0,
+        max_value=100.0,
+        key="win_rate_value",
+        value=50.0,
+        step=1.0,
     )
-    st.warning(f"Loss probability (%): {100.0 - win_rate:.001f}")
+    st.warning(f"Loss probability (%): {100.0 - st.session_state.win_rate_value:.2f}")
 
-    avg_win = st.number_input(
-        "Average win ($):", min_value=0.0, value=1000.0, step=0.01
+    calc_method = st.radio(
+        "Outcome calculation method:",
+        options=["Amount", "Equity percent"],
+        horizontal=True,
+        key="calc_method",
     )
-    avg_loss = st.number_input(
-        "Average loss ($):", min_value=0.0, value=500.0, step=0.01
-    )
-    commission = st.number_input("Commission ($):", min_value=0.0, value=0.0, step=0.01)
-    st.success(
-        f"Expectancy ($): {(avg_win - commission) * win_rate / 100 - (avg_loss + commission) * (100 - win_rate) / 100:.02f}"
-    )
+    if calc_method == "Equity percent":
+        st.number_input(
+            "Average win (%):",
+            min_value=0.0,
+            key="percent_avg_win",
+            step=1.0,
+        )
+        avg_loss = st.number_input(
+            "Average loss (%):",
+            min_value=0.0,
+            key="percent_avg_loss",
+            step=1.0,
+        )
+        start_capital = st.number_input(
+            "Starting capital ($):",
+            min_value=1.0,
+            key="start_capital",
+            step=1000.0,
+        )
+        expectancy = (
+            st.session_state.percent_avg_win * st.session_state.win_rate_value
+            - st.session_state.percent_avg_loss
+            * (100 - st.session_state.win_rate_value)
+        ) / 100
+        st.success(f"Expectancy (%): {expectancy:.02f}")
+
+    else:
+        st.number_input(
+            "Average win ($):",
+            min_value=0.0,
+            key="amount_avg_win",
+            step=1.0,
+        )
+        st.number_input(
+            "Average loss ($):",
+            min_value=0.0,
+            key="amount_avg_loss",
+            step=1.0,
+        )
+        commission = st.number_input(
+            "Commission ($):", min_value=0.0, key="commission", step=0.5
+        )
+        expectancy = (
+            st.session_state.amount_avg_win - commission
+        ) * st.session_state.win_rate_value / 100 - (
+            st.session_state.amount_avg_loss + commission
+        ) * (100 - st.session_state.win_rate_value) / 100
+        st.success(f"Expectancy ($): {expectancy:.02f}")
 
     num_simulations = st.slider(
         "Number of simulations:", min_value=100, max_value=3000, value=1000, step=1
@@ -170,31 +278,44 @@ with c1:
     with sc2:
         btn_simulate = st.button(":material/play_circle: Run", type="primary")
 
-    if st.session_state.get("results") is None:
-        st.session_state.results = {}
-        st.session_state.stats = pd.DataFrame()
 
 with c2:
     if btn_simulate:
         st.session_state.results, st.session_state.stats = simulate_trading(
-            win_rate=win_rate,
-            avg_win=avg_win,
-            avg_loss=avg_loss,
-            commission=commission,
+            win_rate=st.session_state.win_rate_value,
+            avg_win=st.session_state.amount_avg_win
+            if calc_method == "Amount"
+            else st.session_state.percent_avg_win,
+            avg_loss=st.session_state.amount_avg_loss
+            if calc_method == "Amount"
+            else st.session_state.percent_avg_loss,
+            commission=st.session_state.commission if calc_method == "Amount" else 0,
             trades_in_trial=num_trades,
             num_trials=num_simulations,
+            calc_method=calc_method,
+            start_capital=st.session_state.start_capital
+            if calc_method == "Equity percent"
+            else 0,
         )
     else:
-        c_sim, win_streak, loss_streak, win_rate = simulation(
-            win_rate=win_rate,
-            avg_win=avg_win,
-            avg_loss=avg_loss,
-            commission=commission,
+        c_sim, win_streak, loss_streak, win_rate_res = simulation(
+            win_rate=st.session_state.win_rate_value,
+            avg_win=st.session_state.amount_avg_win
+            if calc_method == "Amount"
+            else st.session_state.percent_avg_win,
+            avg_loss=st.session_state.amount_avg_loss
+            if calc_method == "Amount"
+            else st.session_state.percent_avg_loss,
+            commission=st.session_state.commission if calc_method == "Amount" else 0,
             num_trades=num_trades,
+            calc_method=calc_method,
+            start_capital=st.session_state.start_capital
+            if calc_method == "Equity percent"
+            else 0,
         )
         st.session_state.results["win_streak"] = win_streak
         st.session_state.results["loss_streak"] = loss_streak
-        st.session_state.results["win_rate"] = win_rate
+        st.session_state.results["win_rate"] = win_rate_res
         if "simulation" not in st.session_state.results:
             st.session_state.results["simulation"] = c_sim
         else:
@@ -251,7 +372,10 @@ with c2:
 
         datacols = st.columns(4)
         datacols[0].metric(
-            label="Actual Wins:", value=f"{results['win_rate']:,.2f} %", border=True
+            label="Actual Wins:",
+            value=f"{results['win_rate']:,.2f} %",
+            border=True,
+            help="Percentage of trades that were profitable in last simulation.",
         )
         datacols[1].metric(
             label="Actual Losses:",
@@ -270,9 +394,18 @@ with c2:
         )
 
         column_config = {
-            "Last": st.column_config.NumberColumn(format="dollar"),
-            "High P&L": st.column_config.NumberColumn(format="dollar"),
-            "Low P&L": st.column_config.NumberColumn(format="dollar"),
+            "Outcome": st.column_config.TextColumn(
+                help="Trade outcome in last simulation.",
+            ),
+            "Last": st.column_config.NumberColumn(
+                format="dollar", help="Equity values in last simulation."
+            ),
+            "High P&L": st.column_config.NumberColumn(
+                format="dollar", help="Simulation result with highest P&L."
+            ),
+            "Low P&L": st.column_config.NumberColumn(
+                format="dollar", help="Simulation result with lowest P&L."
+            ),
             "Mid P&L": st.column_config.NumberColumn(format="dollar"),
         }
 
